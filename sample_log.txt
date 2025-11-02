@@ -1,0 +1,5 @@
+[2025-10-19 12:05:22] INFO  Telemetry packet received (id=40213)
+[2025-10-19 12:05:23] WARN  Packet delay exceeded threshold (id=40213)
+[2025-10-19 12:05:25] ERROR Packet CRC invalid (id=40213)
+[2025-10-19 12:05:30] INFO  Telemetry packet processed (id=40213)
+[2025-10-19 12:05:32] CRITICAL Command rejected by spacecraft (id=991)
