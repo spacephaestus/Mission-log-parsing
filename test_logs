@@ -1,0 +1,106 @@
+import datetime as dt
+from logs import parse_line, summarize, filter_records, sort_records
+
+# ---------- Parsing basics ----------
+
+def test_parse_line_basic():
+    line = "[2025-10-19 12:05:25] ERROR Packet CRC invalid (id=40213)"
+    r = parse_line(line)
+    assert r is not None
+    assert r["severity"] == "ERROR"
+    assert r["id"] == 40213
+    assert r["message"].startswith("Packet CRC invalid")
+    assert r["timestamp"] == dt.datetime(2025, 10, 19, 12, 5, 25)
+
+def test_parse_line_warn_and_warning():
+    l1 = "[2025-10-19 12:05:23] WARN Packet delay exceeded threshold (id=40213)"
+    l2 = "[2025-10-19 12:05:23] WARNING Packet delay exceeded threshold (id=40213)"
+    r1 = parse_line(l1)
+    r2 = parse_line(l2)
+    assert r1 is not None and r2 is not None
+    assert r1["severity"] == "WARN"
+    assert r2["severity"] == "WARNING"
+    # same timestamp and message parsed
+    assert r1["timestamp"] == r2["timestamp"]
+    assert r1["message"] == r2["message"]
+    assert r1["id"] == r2["id"] == 40213
+
+def test_parse_line_with_milliseconds_and_iso():
+    l_ms = "[2025-10-19 12:05:25.123] INFO Telemetry packet received (id=40213)"
+    l_iso = "[2025-10-19T12:05:25] INFO Telemetry packet received"
+    r_ms = parse_line(l_ms)
+    r_iso = parse_line(l_iso)
+    assert r_ms is not None and r_iso is not None
+    assert r_ms["timestamp"] == dt.datetime(2025, 10, 19, 12, 5, 25, 123000)
+    assert r_iso["timestamp"] == dt.datetime(2025, 10, 19, 12, 5, 25)
+    assert "id" in r_ms and "id" not in r_iso  # id optional
+
+def test_parse_line_malformed_skipped():
+    assert parse_line("") is None
+    assert parse_line("this is not a log line") is None
+    # bad timestamp format is skipped gracefully
+    assert parse_line("[not a time] ERROR Something happened") is None
+
+# ---------- Summarize / counts / earliest-latest ----------
+
+def test_summarize_counts_and_bounds():
+    lines = [
+        "[2025-10-19 12:05:22] INFO Telemetry packet received (id=40213)",
+        "[2025-10-19 12:05:23] WARN Packet delay exceeded threshold (id=40213)",
+        "[2025-10-19 12:05:25] ERROR Packet CRC invalid (id=40213)",
+        "[2025-10-19 12:05:32] CRITICAL Command rejected by spacecraft (id=991)",
+    ]
+    recs = [parse_line(l) for l in lines]
+    recs = [r for r in recs if r is not None]
+    s = summarize(recs)
+    # counts are strings -> ints
+    assert s["counts"]["INFO"] == 1
+    assert s["counts"]["WARN"] == 1
+    assert s["counts"]["ERROR"] == 1
+    assert s["counts"]["CRITICAL"] == 1
+    # earliest/latest are stringified timestamps in "YYYY-MM-DD HH:MM:SS"
+    assert s["earliest"] == "2025-10-19 12:05:22"
+    assert s["latest"]   == "2025-10-19 12:05:32"
+
+# ---------- Filtering ----------
+
+def test_filter_by_severity_and_id():
+    lines = [
+        "[2025-10-19 12:05:22] INFO Telemetry packet received (id=40213)",
+        "[2025-10-19 12:05:25] ERROR Packet CRC invalid (id=40213)",
+        "[2025-10-19 12:05:32] CRITICAL Command rejected by spacecraft (id=991)",
+    ]
+    recs = [parse_line(l) for l in lines if parse_line(l) is not None]
+    only_errors = filter_records(recs, severity="ERROR")
+    assert len(only_errors) == 1 and only_errors[0]["severity"] == "ERROR"
+    id_40213 = filter_records(recs, packet_id=40213)
+    assert len(id_40213) == 2  # INFO + ERROR for that id
+    both = filter_records(recs, severity="ERROR", packet_id=40213)
+    assert len(both) == 1 and both[0]["severity"] == "ERROR" and both[0]["id"] == 40213
+
+# ---------- Sorting ----------
+
+def test_sort_by_latest_and_severity():
+    lines = [
+        "[2025-10-19 12:05:22] INFO Telemetry packet received (id=40213)",
+        "[2025-10-19 12:05:25] ERROR Packet CRC invalid (id=40213)",
+        "[2025-10-19 12:05:32] CRITICAL Command rejected by spacecraft (id=991)",
+        "[2025-10-19 12:05:23] WARNING Packet delay exceeded threshold (id=40213)",
+    ]
+    recs = [parse_line(l) for l in lines if parse_line(l) is not None]
+
+    # sort by latest first (reverse timestamp)
+    latest_first = sort_records(recs, key="timestamp", reverse=True)
+    assert latest_first[0]["severity"] == "CRITICAL"
+    assert latest_first[-1]["severity"] in ("INFO",)  # earliest
+
+    # sort by severity (we expect highest severity first based on SEVERITY_RANK)
+    by_sev = sort_records(recs, key="severity", reverse=True)
+    severities = [r["severity"] for r in by_sev]
+    # CRITICAL should appear before ERROR, which appears before WARNING/INFO
+    assert severities.index("CRITICAL") < severities.index("ERROR")
+    # WARNING (or WARN) should be after ERROR when present
+    if "WARNING" in severities:
+        assert severities.index("ERROR") < severities.index("WARNING")
+    # INFO should be last among these four
+    assert severities[-1] == "INFO"
